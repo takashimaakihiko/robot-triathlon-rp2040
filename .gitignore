@@ -1,0 +1,22 @@
+# Build artifacts
+build/
+*.uf2
+*.elf
+*.bin
+*.hex
+*.map
+*.dis
+
+# IDE files
+.vscode/
+.idea/
+
+# Pico SDK
+pico_sdk_import.cmake
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Original H8 files (keep for reference)
+# H8_3664F/

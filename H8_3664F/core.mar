@@ -1,0 +1,547 @@
+;**************************************************************************
+;
+;  "メカトロニクストレーニングロボット"のためのアセンブラルーチン
+;      (バックグラウンドで走る標準ロボット用プログラムです。)
+;                          Version 0.3.0
+;                                                     BY YOU-YOU ROBOTICS
+;**************************************************************************
+;
+; CPU端子の接続状況は以下のようになっています。
+;    <---はUPU からみて入力を表し、--->は出力を表します。
+;ポート 1
+; P10/TMOW       --->ライントレースセンサ駆動用クロック信号
+; P14/IRQ0       <---右側ロータリエンコーダＡ相信号(立下りエッジで割込み）
+; P15/IRQ1       <---左側ロータリエンコーダＡ相信号(立下りエッジで割込み）
+; P16/IRQ2       <---右側ライン検出センサ信号(立下りエッジで割込み）
+; P17/IRQ3/TRIGV <---左側ライン検出センサ信号(立下りエッジで割込み）
+;
+;ポート 2（ロボットではこのポートは使用しません。）
+; P20/SCK3  <---汎用入力(未接続)
+; P21/RXD   <---汎用入力(未接続)
+; P22/TXD   --->汎用出力(未接続)
+;
+;ポート 5
+; P50/WKP0       <---ディップスイッチ BIT0
+; P51/WKP1       <---ディップスイッチ BIT1
+; P52/WKP2       --->表示用LED0
+; P53/WKP3       --->表示用LED1
+; P54/WKP4       --->右側モータ前進回転指令
+; P55/WKP5/ADTRG --->右側モータ後退回転指令
+; P56/SDA        --->左側モータ前進回転指令
+; P57/SDL        --->左側モータ後退回転指令
+;
+;ポート 7
+; P74/TMRIV --->ラインセンサ・イネーブル（LOで電源ON,HIで電源OFF）
+; P75/TMCIV --->赤外線測距センサ・イネーブル（LOで電源ON,HIで電源OFF)
+; P76/TMOV  <---ユーザー開放デジタル入力端子
+;
+;ポート 8
+; P80/FTCI  <---右側ロータリエンコーダＢ相信号
+; P81/FTIOA <---左側ロータリエンコーダＢ相信号
+; P82/FTIOB --->右側モータ用PWM信号
+; P83/FTIOC --->左側モータ用PWM信号
+; P84/FTIOD --->追加モータ用PWM信号出力端子（ユーザー開放）
+; P85       --->ユーザー開放デジタル出力端子
+; P86       --->ユーザー開放デジタル出力端子
+; P87       <---ユーザー開放デジタル入力端子
+;
+;ポート B
+; PB0/AN0 <--- 赤外線測距センサ出力の読み取り端子
+; PB1/AN1 <--- ライントレースセンサのGND電圧読み取り端子
+; PB2/AN2 <--- ライントレースセンサ信号読み取り端子
+; PB3/AN3 <--- ユーザー開放A/D変換入力端子
+;
+; CPU CLOCK:16MHZ(T: 0.000 000 062 5 sec)
+;
+;----------------------------------- プログラムはここから ----------------------------------
+;
+  .CPU 300HN      ;対象ＣＰＵ
+  .PRINT LIST     ;リスト出力指令
+;
+  .IMPORT _main,_current_status,__INITSCT,_INITIALVALUES  ;外部定義関数
+  .EXPORT _CFLAG,_SWDATA,_RCOUNT,_LCOUNT,_LINEDETECT_R,_LINEDETECT_L,_LINESENSE,_SUM_R,
++ _SUM_L,_AUTOFLASH,_DISTANCE,_GNDV,_TRACER,_ADVOLT,_POSITION_X,_POSITION_Y,_ATTITUDE_ANGLE,
++ _RCOUNT_1,_LCOUNT_1,_RCOUNT_2,_LCOUNT_2,_OMEGA_2,_POSITION_X_1,_POSITION_Y_1,_POSITION_X_2,
++ _POSITION_Y_2,_ATTITUDE_ANGLE0,_FAI0,_COSFAI_2,_SINFAI_2,_R_SPEED,_L_SPEED
+  .EXPORT __D_ROM,__D_BGN,__D_END,__B_BGN,__B_END
+;
+;-------------制御周期、LED点滅周期を変える場合には以下の値を書き換えます。----------------
+TIMERCONST  .EQU  D'20   ;インターバルタイマの周期を決める定数で周期は(0.512*TIMERCONST)msec
+FLASHCONST  .EQU  D'50    ;LEDの点滅周期を決める定数で周期はFLASHCONST*(0.512*TIMERCONST)msec
+;------------- 以下の定義はアセンブラのヘッダーのようなものです。--------------------------
+STACK     .EQU    H'FF80  ;スタックのポイントアドレス
+TMRW      .EQU    H'FF80  ;タイマモードレジスタ W
+TCRW      .EQU    H'FF81  ;タイマコントロールレジスタ W
+TIERW     .EQU    H'FF82  ;タイマ割込みイネーブルレジスタ W
+TSRW      .EQU    H'FF83  ;タイマステータスレジスタ W
+TIOR0     .EQU    H'FF84  ;タイマ I/O コントロールレジスタ 0
+TIOR1     .EQU    H'FF85  ;タイマ I/O コントロールレジスタ 1
+TCNT      .EQU    H'FF86  ;タイマ/カウンタ
+GRA       .EQU    H'FF88  ;ジェネラルレジスタ A
+GRB       .EQU    H'FF8A  ;ジェネラルレジスタ B
+GRC       .EQU    H'FF8C  ;ジェネラルレジスタ C
+GRD       .EQU    H'FF8E  ;ジェネラルレジスタ D
+FLMCR1    .EQU    H'FF90  ;フラッシュメモリ　コントロールレジスタ 1
+FLMCR2    .EQU    H'FF91  ;フラッシュメモリ　コントロールレジスタ 2
+FLPWCR    .EQU    H'FF92  ;フラッシュメモリ　パワーコントロールレジスタ
+EBR1      .EQU    H'FF93  ;イネーブルブロックレジスタ 1
+FENR      .EQU    H'FF9B  ;フラッシュメモリ　イネーブルレジスタ
+TCRV0     .EQU    H'FFA0  ;タイマコントロールレジスタV0
+TCSRV     .EQU    H'FFA1  ;タイマコントロールステータスレジスタ V
+TCORA     .EQU    H'FFA2  ;タイムコンスタントレジスタ A
+TCORB     .EQU    H'FFA3  ;タイムコンスタントレジスタ B
+TCNTV     .EQU    H'FFA4  ;タイマ/カウンタレジスタ V
+TCRV1     .EQU    H'FFA5  ;タイマコントロールレジスタ V1
+TMA       .EQU    H'FFA6  ;タイマモードレジスタ A
+TCA       .EQU    H'FFA7  ;タイマ/カウンタ A
+SMR       .EQU    H'FFA8  ;シリアルモードレジスタ
+BRR       .EQU    H'FFA9  ;ビットレートレジスタ
+SCR3      .EQU    H'FFAA  ;シリアルコントロールレジスタ 3
+TDR       .EQU    H'FFAB  ;送信データレジスタ
+SSR       .EQU    H'FFAC  ;シリアルステータスレジスタ
+RDR       .EQU    H'FFAD  ;受信データレジスタR
+ADDRA     .EQU    H'FFB0  ;A/D データレジスタ A
+ADDRB     .EQU    H'FFB2  ;A/D データレジスタ B
+ADDRC     .EQU    H'FFB4  ;A/D データレジスタ C
+ADDRD     .EQU    H'FFB6  ;A/D データレジスタ D
+ADCSR     .EQU    H'FFB8  ;A/D コントロールステータスレジスタ
+ADCR      .EQU    H'FFB9  ;A/D コントロールレジスタ
+TCSRWD    .EQU    H'FFC0  ;ウオッチドグタイマステータスレジスタ
+TCWD      .EQU    H'FFC1  ;ウオッチドグタイマカウンタ
+TMWD      .EQU    H'FFC2  ;ウオッチドグモードレジスタ
+ICCR      .EQU    H'FFC4  ;IIC バスコントロールレジスタ
+ICSR      .EQU    H'FFC5  ;IIC バスステータスレジスタ
+ICDR      .EQU    H'FFC6  ;IIC バスデータレジスタ
+SARX      .EQU    H'FFC6  ;セカンドスレーブアドレスレジスタ 
+ICMR      .EQU    H'FFC7  ;IIC バスモードレジスタ
+SAR       .EQU    H'FFC7  ;スレーブアドレスレジスタ
+ABRKCR    .EQU    H'FFC8  ;アドレスブレークコントロールレジスタ
+ABRKSR    .EQU    H'FFC9  ;アドレスブレークステータスレジスタ
+BARH      .EQU    H'FFCA  ;ブレークアドレスレジスタ H
+BARL      .EQU    H'FFCB  ;ブレークアドレスレジスタ L
+BDRH      .EQU    H'FFCC  ;ブレークデータレジスタ H
+BDRL      .EQU    H'FFCD  ;ブレークデータレジスタ L
+PUCR1     .EQU    H'FFD0  ;ポートプルアップコントロールレジスタ 1
+PUCR5     .EQU    H'FFD1  ;ポートプルアップコントロールレジスタ 5
+PDR1      .EQU    H'FFD4  ;ポートデータレジスタ 1
+PDR2      .EQU    H'FFD5  ;ポートデータレジスタ 2
+PDR5      .EQU    H'FFD8  ;ポートデータレジスタ 5
+PDR7      .EQU    H'FFDA  ;ポートデータレジスタ 7
+PDR8      .EQU    H'FFDB  ;ポートデータレジスタ 8
+PDRB      .EQU    H'FFDD  ;ポートデータレジスタ B
+PMR1      .EQU    H'FFE0  ;ポートモードレジスタ 1
+PMR5      .EQU    H'FFE1  ;ポートモードレジスタ 5
+PCR1      .EQU    H'FFE4  ;ポートコントロールレジスタ 1
+PCR2      .EQU    H'FFE5  ;ポートコントロールレジスタ 2
+PCR5      .EQU    H'FFE8  ;ポートコントロールレジスタ 5
+PCR7      .EQU    H'FFEA  ;ポートコントロールレジスタ 7
+PCR8      .EQU    H'FFEB  ;ポートコントロールレジスタ 8
+SYSCR1    .EQU    H'FFF0  ;システムコントロールレジスタ 1
+SYSCR2    .EQU    H'FFF1  ;システムコントロールレジスタ 2
+IEGR1     .EQU    H'FFF2  ;割込みエッジセレクトレジスタ 1
+IEGR2     .EQU    H'FFF3  ;割込みエッジセレクトレジスタ 2
+IENR1     .EQU    H'FFF4  ;割込みイネーブルレジスタ 1
+IRR1      .EQU    H'FFF6  ;割込みフラグレジスタ 1
+IWPR      .EQU    H'FFF8  ;ウェイクアップ割込みフラグレジスタ
+MSTCR1    .EQU    H'FFF9  ;モジュールスタンバイコントロールレジスタ 1
+TSCR      .EQU    H'FFFC  ;タイマシリアルコントロールレジスタ
+;
+;
+;------------------------------------------------------------------------------
+;        割込みベクタテーブル
+;------------------------------------------------------------------------------
+     .SECTION VECT, DATA, LOCATE=H'0000
+;
+     .DATA.W RESET     ;VECTOR #0 パワーオンリセット
+;
+     .ORG	H'001C
+     .DATA.W IRQ0      ;VECTOR #14 右側ロータリエンコーダ割込み
+     .DATA.W IRQ1      ;VECTOR #15 左側ロータリエンコーダ割込み
+     .DATA.W IRQ2      ;VECTOR #16 右側ライン検出センサ割込み
+     .DATA.W IRQ3      ;VECTOR #17 左側ライン検出センサ割込み
+;
+     .ORG	H'0026
+     .DATA.W TIMERA    ;VECTOR #19　タイマAオーバフロー割込み(基本インターバルタイマ)
+;
+     .ORG	H'0032
+     .DATA.W CINTERVAL ;VECTOR #25　A/D変換終了割込み（制御周期割込み）
+;
+     .SECTION PP, CODE, LOCATE=H'0034
+;------------------------------------------------------------------------------
+;      スタックポインタの設定と各ポートの初期化
+;------------------------------------------------------------------------------
+RESET:  MOV.W #STACK, R7  ;スタックポインタアドレスの設定
+        JSR @__INITSCT      ;Ｃプログラム・データセクションの初期化処理
+
+;
+;ポート１の機能設定
+        BCLR #0, @PDR1     ;P10のデータビットに0をセット
+        MOV.B #B'11111100, R0L
+        MOV.B R0L, @PMR1   ;P10:汎用入出力 IRQ0～IRQ3:有効
+        MOV.B #B'00000001, R0L
+        MOV.B R0L, @PCR1   ;P10は出力端子
+        MOV.B #B'00000000, R0L
+        MOV.B R0L, @PUCR1  ;IRQ0～IRQ3端子をプルアップ設定
+;
+; ポート２の機能設定(汎用入出力) ※このポートは使用しません。
+        BCLR #2, @PDR2     ;P22のデータビットに0をセット
+        MOV.B #B'00000000, R0L
+        MOV.B R0L, @SCR3
+        MOV.B R0L, @SMR
+        MOV.B #B'00000000, R0L
+        MOV.B R0L, @PCR2   ;P20:入力 P21:入力 P22:入力
+;
+; ポート５の機能設定
+        MOV.B #B'00000000, R0L
+        MOV.B R0L, @PMR5      ;全ての端子を汎用入出力に指定
+        MOV.B #B'11111100, R0L
+        MOV.B R0L, @PCR5      ;P50,P51:入力  P52～P57:出力
+        MOV.B #B'00000011, R0L
+        MOV.B R0L, @PUCR5     ;P50,P51にプルアップ指定
+        MOV.B @PDR5, R0L      ;ポート5データレジスタの読取り
+        AND.B #B'00000011, R0L;上位6ビットをクリア
+        MOV.B R0L, @_SWDATA   ;大域変数_SWDATAにディップスイッチのデータを格納
+;
+;ポート７の機能設定
+        MOV.B #B'00110000, R0L
+        MOV.B R0L, @PDR7      ;P74,P95に出力すべき初期データをHIにセット
+        MOV.B #B'00110000, R0L
+        MOV.B R0L, @PCR7      ;P74:出力指定  P75:出力指定  P76:入力指定
+;
+;ポート８の機能設定
+        MOV.B #B'00000000, R0L
+        MOV.B R0L, @PDR8      ;P8D1=0,P8D5=0,P8D6=0,P8D7=0
+        MOV.B #B'01111100, R0L;P80,TIOA:入力  P85,P86:出力  P87:入力
+        MOV.B R0L, @PCR8      ;TIOB,TIOC,TIOD:出力
+;
+;------------------------------------------------------------------------------
+;      タイマの初期設定(タイマ割込みの設定も含む)
+;------------------------------------------------------------------------------
+; タイマ A	の設定(ライントレース用LED駆動信号(1KHZ)および制御周期生成に使用)
+        MOV.B #B'00010110, R0L ;カウントはシステムクロック/32(→約2KHzのパルス生成)
+        MOV.B R0L, @TMA
+; タイマ W の設定(モータ駆動用のPWM信号生成のため)
+        MOV.B #B'01001111, R0L
+        MOV.B R0L, @TMRW       ;タイマストップ,FTIOB,FTIOC,FTIODはそれぞれPWM出力指定
+        MOV.B #B'10001110, R0L ;コンペアマッチAでカウンタクリア,システムクロックでカウント
+        MOV.B R0L, @TCRW       ;FTIOB,FTIOC,FTIODの初期値はすべて1
+        MOV.B #B'10011000, R0L ;コンペアマッチAのTIOAへの出力禁止
+        MOV.B R0L, @TIOR0      ;コンペアマッチBでTIOBに0出力
+        MOV.B #B'10011001, R0L ;コンペアマッチCでTIOCに0出力
+        MOV.B R0L, @TIOR1      ;コンペアマッチDでTIODに0出力
+        MOV.W #D'800, R0
+        MOV.W R0, @GRA         ;PWM周期の設定
+        MOV.W #D'5, R0
+        MOV.W R0, @GRB         ;TIOB:PWMのデューティ5/800
+        MOV.W R0, @GRC         ;TIOC:PWMのデューティ5/800
+        MOV.W R0, @GRD         ;TIOD:PWMのデューティ5/800
+;
+;------------------------------------------------------------------------------
+;      初期化ルーチン３（割り込み関係）
+;------------------------------------------------------------------------------
+        MOV.B #B'01111100, R0L
+        MOV.B R0L, @IEGR1  ;IRQ0,IRQ1：立下りで割込み　IRQ2,IRQ3：立上りで割込み
+        MOV.B #B'01011111, R0L
+        MOV.B R0L, @IENR1  ;TIMER A,IRQ0,IRQ1,IRQ2,IRQ3の各割込みを許可
+;
+;------------------------------------------------------------------------------
+;       変数の初期値設定、割り込み要因の許可と_mainへのジャンプ
+;------------------------------------------------------------------------------
+;
+        MOV.B #0, R0L
+        MOV.B R0L, @_CFLAG        ;_CFLAG=0
+        MOV.B R0L, @_LINEDETECT_R ;_LINEDETECT_R=0
+        MOV.B R0L, @_LINEDETECT_L ;_LINEDETECT_L=0
+        MOV.B #3, R0L
+        MOV.B R0L, @_AUTOFLASH    ;AUTOFLASH=3 LEDを２個とも点灯
+        MOV.B #TIMERCONST, R0L
+        MOV.B R0L, @TACNT         ;TACNT=20
+        MOV.B #FLASHCONST, R0L
+        MOV.B R0L, @HSCNT         ;HSCNT=50
+        MOV.W #0, R0
+        MOV.W R0, @_DISTANCE      ;_DISTANCE=0
+        MOV.W R0, @_GNDV          ;_GNDV=0
+        MOV.W R0, @_TRACER        ;_TRACER=0
+        MOV.W R0, @_ADVOLT        ;_ADVOLT=0
+        MOV.L #0, ER0
+        MOV.L ER0, @_RCOUNT       ;_RCOUNT=0
+        MOV.L ER0, @_LCOUNT       ;_LCOUNT=0
+        MOV.L ER0, @_RCOUNT_1     ;_RCOUNT_1=0
+        MOV.L ER0, @_LCOUNT_1     ;_LCOUNT_1=0
+        MOV.L ER0, @_RCOUNT_2     ;_RCOUNT_2=0
+        MOV.L ER0, @_LCOUNT_2     ;_LCOUNT_2=0
+        JSR @_INITIALVALUES      ;位置・姿勢角計測のための初期値設定
+;
+        BSET #7, @TMRW	;タイマWスタート(PWM信号出力開始)
+;
+
+        ANDC.B #B'01111111, CCR   ;I Flag をクリア（割り込み許可）
+;
+        JSR @_main                ;Cプログラムののメイン関数へジャンプ
+LOOP:  BRA LOOP
+;
+;------------------------------------------------------------------------------
+;　　   各種の割込み処理
+;------------------------------------------------------------------------------
+IRQ0:  ;右側ロータリエンコーダ割り込みの処理
+        PUSH.L ER0
+        BTST #0, @PDR8      ;P80が0かどうかを判定
+        BEQ DECRCOUNT
+        MOV.L @_RCOUNT, ER0 ;前進回転なので_RCOUNT値+1
+        INC.L #1, ER0
+        MOV.L ER0, @_RCOUNT
+        BCLR #0, @IRR1      ;IRQ0割込み要求フラグクリア
+        POP.L ER0
+        RTE
+DECRCOUNT:
+        MOV.L @_RCOUNT, ER0 ;後退回転なので_RCOUNT値-1
+        DEC.L #1, ER0
+        MOV.L ER0, @_RCOUNT
+        BCLR #0, @IRR1      ;IRQ0割込み要求フラグクリア
+        POP.L ER0
+        RTE
+;
+IRQ1:  ;左側ロータリエンコーダ割り込みの処理
+        PUSH.L ER0
+        BTST #1, @PDR8      ;P81が0かどうかを判定
+        BEQ DECLCOUNT
+        MOV.L @_LCOUNT, ER0 ;前進回転なので_LCOUNT値+1
+        INC.L #1, ER0
+        MOV.L ER0, @_LCOUNT
+        BCLR #1, @IRR1      ;IRQ1割込み要求フラグクリア
+        POP.L ER0
+        RTE
+DECLCOUNT:
+        MOV.L @_LCOUNT, ER0 ;後退回転なので_LCOUNT値-1
+        DEC.L #1, ER0
+        MOV.L ER0, @_LCOUNT
+        BCLR #1, @IRR1      ;IRQ1割込み要求フラグクリア
+        POP.L	ER0
+        RTE
+;
+IRQ2:  ;右側ラインライン検出割込みの処理(_LINEDETECT_Rのセット)
+        PUSH.W R0
+        MOV.B #1, R0L
+        MOV.B R0L, @_LINEDETECT_R;_LINEDETECT_R=1
+        BCLR #2, @IRR1      ;IRQ2割込み要求フラグクリア
+        POP.W R0
+        RTE
+;
+IRQ3:  ;左側ラインライン検出割込みの処理(_LINEDETECT_Lのセット)
+        PUSH.W R0
+        MOV.B #1, R0L
+        MOV.B R0L, @_LINEDETECT_L;_LINEDETECT_L=1
+        BCLR #3, @IRR1      ;IRQ3割込み要求フラグクリア
+        POP.W R0
+        RTE
+;
+TIMERA: ;タイマA割込み処理（LED駆動用1KHZパルス生成,制御周期生成）
+        PUSH.W R0
+        MOV.B @_LINESENSE, R0L
+        BTST #0, R0L           ;LINESENSEが0かどうかを判定
+        BEQ LED_OFF            ;_LINESENSE=0ならLED_OFFへジャンプ
+        BTST #0, @PDR1;        ;P10に0が出力されていたかどうか判定
+        BEQ INVERT             ;P10=0のときはA/D変換せずにINVERTへジャンプ
+        ;CH2のA/D変換ルーチン
+        MOV.B #B'00101010, R0L  ;単一モード,高速変換指定
+        MOV.B R0L, @ADCSR       ;AN2の変換開始
+LP0:    BTST.B #7, @ADCSR       ;変換終了？(ADF=1?)
+        BEQ LP0
+        MOV.W @ADDRC, R0        ;AN2の読み込み
+        SHLR.W R0               ;6 bit 右シフト
+        SHLR.W R0
+        SHLR.W R0
+        SHLR.W R0
+        SHLR.W R0
+        SHLR.W R0
+        MOV.W R0, @_TRACER    ;_TRACERに格納
+INVERT: BNOT #0, @PDR1      ;P10の出力を反転
+        ;TACNTのチェック
+        MOV.B @TACNT, R0L       ;カウンタ変数のロード
+        CMP.B #0, R0L           ;TACNTが0かどうかの判定
+        BEQ STINTRPT            ;TACNT=0ならA/D変換割込み設定ルーチンへジャンプ
+        DEC.B R0L               ;TACNT=TACNT-1
+        MOV.B R0L, @TACNT       ;TACNTのセーブ
+        BCLR #6, @IRR1      ;タイマA割込みフラグのクリア
+        POP.W R0
+        RTE
+LED_OFF:
+        BCLR #0, @PDR1      ;P10に"0"を出力
+        ;TACNTのチェック
+        MOV.B @TACNT, R0L       ;カウンタ変数のロード
+        CMP.B #0, R0L           ;TACNTが0かどうかの判定
+        BEQ STINTRPT            ;TACNT=0ならA/D変換割込み設定ルーチンへジャンプ
+        DEC.B R0L               ;TACNT=TACNT-1
+        MOV.B R0L, @TACNT       ;TACNTのセーブ
+        BCLR #6, @IRR1      ;タイマA割込みフラグのクリア
+        POP.W R0
+        RTE
+STINTRPT:
+        MOV.B #B'01101001, R0L  ;変換終了割込み有効,単一モード,高速変換指定
+        MOV.B R0L, @ADCSR       ;ライントレースセンサのGND電圧(AN1)の変換開始
+        MOV.B #TIMERCONST, R0L
+        MOV.B R0L, @TACNT       ;TACNTにTIMERCONSTの値をプリセット
+        BCLR #6, @IRR1          ;タイマA割込みフラグのクリア
+        POP.W R0
+        RTE
+;
+CINTERVAL: ;変換終了割込み処理(10msecインターバルタイマ,表示用LEDの自動点滅制御、AD変換)
+        PUSH.L ER0
+        PUSH.L ER1
+        PUSH.L ER2
+        PUSH.L ER3
+        PUSH.L ER4
+        PUSH.L ER5
+        PUSH.L ER6
+        BTST.B #7, @ADCSR       ;A/D変換終了フラグADFの読み出し
+        BCLR #7, @ADCSR         ;A/D変換終了フラグADFのクリア
+        BCLR #6, @ADCSR         ;A/D変換終了割込みイネーブルの解除
+;
+
+        ANDC.B #B'01111111, CCR ;多重割り込み許可
+;
+        MOV.B #1, R0L
+        MOV.B R0L, @_CFLAG      ;_CFLAGをセット
+;
+        JSR @_current_status    ;ロボットの位置と向きを計算するＣルーチンへジャンプ
+;
+        MOV.B @HSCNT, R0H       ;0.5secのインターバル生成
+        DEC.B R0H
+        BEQ LEDFLGCHK           ;HSCNT=0ならサブルーチンLEDFLGCHKへ
+        MOV.B R0H, @HSCNT
+        BRA ADCONV              ;ADCONVへジャンプ
+;
+LEDFLGCHK:  ;_AUTOFLASHの内容を調べてLEDの点滅制御を行うサブルーチン
+        MOV.B #FLASHCONST, R0L
+        MOV.B R0L, @HSCNT       ;0.5secインターバルを作るための初期値を再設定
+        MOV.B @_AUTOFLASH, R0L 
+        CMP.B #0, R0L
+        BEQ ALLOFF              ;_AUTOFLASH=1ならALLOFFへ
+        CMP.B #1, R0L
+        BEQ ALT                 ;_AUTOFLASH=1ならALTへ
+        CMP.B #2, R0L
+        BEQ FLSH                ;_AUTOFLASH=2ならFLSHへ
+        CMP.B #3, R0L
+        BEQ ALLON               ;_AUTOFLASH=3ならALLONへ
+        BRA ADCONV              ;それ以外ならADCONVへジャンプ
+ALLOFF:
+        BCLR #2, @PDR5
+        BCLR #3, @PDR5
+        BRA ADCONV              ;ADCONVへジャンプ
+ALT:  ;LED２個を交互に点滅
+        BLD #2, @PDR5           ;P52の状態をキャリフラグに転送
+        BST #3, @PDR5           ;キャリフラグの内容をP53にセット
+        BNOT #2, @PDR5          ;P52(LED0)の点灯状態を反転
+        BRA ADCONV              ;ADCONVへジャンプ
+FLSH: ;LED２個を同時点滅
+        BNOT #2, @PDR5          ;P52(LED0)の点灯状態を反転
+        BLD #2, @PDR5           ;P52の状態をキャリフラグに転送
+        BST #3, @PDR5           ;キャリフラグの内容をP53にセット
+        BRA ADCONV              ;ADCONVへジャンプ
+ALLON: ;LED２個を同時点灯
+        BSET #2, @PDR5          ;LED0を点灯
+        BSET #3, @PDR5          ;LED1を点灯
+;	
+ADCONV: ;以下４チャンネル分のA/D変換ルーチン
+        MOV.B #B'00111011, R0L  ;グループ0を指定,スキャンモード,高速変換指定
+        MOV.B R0L, @ADCSR       ;Group 0(AN0～AN3)の変換開始
+LP1:    BTST.B #7, @ADCSR       ;変換終了？(ADF=1?)
+        BEQ LP1
+        BCLR #5, @ADCSR         ;変換動作終了
+        MOV.W @ADDRA, E0        ;AN0の読み込み
+        SHLR.W E0               ;6 bit 右シフト
+        SHLR.W E0
+        SHLR.W E0
+        SHLR.W E0
+        SHLR.W E0
+        SHLR.W E0
+        MOV.W E0, @_DISTANCE    ;_DISTANCEに格納
+        MOV.W @ADDRB, E0        ;AN1の読み込み
+        SHLR.W E0               ;6 bit 右シフト
+        SHLR.W E0
+        SHLR.W E0
+        SHLR.W E0
+        SHLR.W E0
+        SHLR.W E0
+        MOV.W E0, @_GNDV        ;_GNDVに格納
+        MOV.W @ADDRD, E0        ;AN3の読み込み
+        SHLR.W E0               ;6 bit 右シフト
+        SHLR.W E0
+        SHLR.W E0
+        SHLR.W E0
+        SHLR.W E0
+        SHLR.W E0
+        MOV.W E0, @_ADVOLT      ;_ADVOLTに格納
+;ここまでがA/D変換ルーチン
+;
+        POP.L ER6
+        POP.L ER5
+        POP.L ER4
+        POP.L ER3
+        POP.L ER2
+        POP.L ER1
+        POP.L ER0
+        RTE
+;
+;
+;-----------------------------------------------------------------------------
+;  Ｃコンパイラが出力するデータセクションのアドレス取得
+;-----------------------------------------------------------------------------
+  .SECTION D,DATA,ALIGN=2
+  .SECTION R,DATA,ALIGN=2
+  .SECTION B,DATA,ALIGN=2
+  .SECTION C,DATA,ALIGN=2
+;
+__D_ROM .DATA.W (STARTOF D)              ;セクションD の先頭アドレス
+__D_BGN .DATA.W (STARTOF R)              ;セクションR の先頭アドレス
+__D_END .DATA.W (STARTOF R)+(SIZEOF R)   ;セクションR の最終アドレス
+__B_BGN .DATA.W (STARTOF B)              ;セクションB の先頭アドレス
+__B_END .DATA.W (STARTOF B)+(SIZEOF B)   ;セクションB の最終アドレス
+;
+;
+;------------------------------------------------------------------------------
+;  アセンブラプログラムで使う内部変数の定義と領域確保
+;------------------------------------------------------------------------------
+
+  .SECTION DD1, DATA, LOCATE=H'F780
+;
+HSCNT:           .RES.B 1  ;0.5secを作るためのカウンタ変数
+TACNT:           .RES.B 1  ;制御周期10.24msecを作るためのカウンタ変数
+;
+;------------------------------------------------------------------------------
+;　Ｃプログラムと共有する変数の定義と領域確保
+;------------------------------------------------------------------------------
+;
+_CFLAG:           .RES.B 1  ;インターバルタイマ割り込みフラグ
+_SWDATA:          .RES.B 1  ;ディップスイッチの状態モニタ
+_LINEDETECT_R:    .RES.B 1  ;右側ライン検出フラグ
+_LINEDETECT_L:    .RES.B 1  ;左側ライン検出フラグ
+_LINESENSE:       .RES.B 1  ;ライントレースセンサを働かせるためのフラグ変数
+_AUTOFLASH:       .RES.B 1  ;LEDを自動点滅させるためのフラグ変数
+_DISTANCE:        .RES.W 1  ;赤外線測距センサ出力のA/D変換値を格納する変数
+_GNDV:            .RES.W 1  ;ライントレースセンサのGND電圧のA/D変換値を格納する変数
+_TRACER:          .RES.W 1  ;ライントレースセンサのA/D変換値を格納する変数
+_ADVOLT:          .RES.W 1  ;ユーザー開放端子のA/D変換値
+_RCOUNT:          .RES.L 1  ;右側ロータリエンコーダのカウント値
+_LCOUNT:          .RES.L 1  ;左側ロータリエンコーダのカウント値
+_SUM_R:           .RES.L 1  ;右側モータを制御するために使う積算変数
+_SUM_L:           .RES.L 1  ;左側モータを制御するために使う積算変数
+_POSITION_X:      .RES.L 1  ;ロボットのＸ座標値が格納される変数(float型)
+_POSITION_Y:      .RES.L 1  ;ロボットのＹ座標値が格納される変数(float型)
+_ATTITUDE_ANGLE:  .RES.L 1  ;ロボットの姿勢角が格納される変数(float型)
+_ATTITUDE_ANGLE0: .RES.L 1  ;ロボットの姿勢角の初期値が格納される変数(float型)
+_FAI0:            .RES.L 1  ;ロボットの姿勢角の初期値が格納される変数(float型)
+_RCOUNT_1:        .RES.L 1  ;右側ロータリエンコーダの１時刻前のカウント値
+_LCOUNT_1:        .RES.L 1  ;左側ロータリエンコーダの１時刻前のカウント値
+_RCOUNT_2:        .RES.L 1  ;右側ロータリエンコーダの２時刻前のカウント値
+_LCOUNT_2:        .RES.L 1  ;左側ロータリエンコーダの２時刻前のカウント値
+_POSITION_X_1:    .RES.L 1  ;ロボットの１時刻前のＸ座標値
+_POSITION_Y_1:    .RES.L 1  ;ロボットの１時刻前のＹ座標値
+_POSITION_X_2:    .RES.L 1  ;ロボットの２時刻前のＸ座標値
+_POSITION_Y_2:    .RES.L 1  ;ロボットの２時刻前のＹ座標値
+_OMEGA_2:         .RES.L 1  ;ロボットの位置と姿勢角を計算するための変数
+_COSFAI_2:        .RES.L 1  ;ロボットの位置と姿勢角を計算するための変数
+_SINFAI_2:        .RES.L 1  ;ロボットの位置と姿勢角を計算するための変数
+_R_SPEED:         .RES.L 1  ;右車輪の回転移動速度
+_L_SPEED:         .RES.L 1  ;左車輪の回転移動速度
+  .END
